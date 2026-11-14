@@ -1,0 +1,23 @@
+class Ssync < Formula
+  desc "Move AI agent skills into ~/.agents/skills and symlink them back"
+  homepage "https://github.com/nickchef/ssync"
+  url "@URL@"
+  sha256 "@SHA256@"
+  head "https://github.com/nickchef/ssync.git", branch: "main"
+
+  depends_on "go" => :build
+  depends_on :macos
+
+  def install
+    system "go", "build", *std_go_args(ldflags: "-s -w -X main.version=#{version}")
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/ssync version")
+    ENV["HOME"] = testpath
+    (testpath/".claude/skills/demo/SKILL.md").write "# demo"
+    system bin/"ssync", "apply", "-y"
+    assert_predicate testpath/".claude/skills/demo", :symlink?
+    assert_predicate testpath/".agents/skills/demo/SKILL.md", :exist?
+  end
+end
