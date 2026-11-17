@@ -47,8 +47,11 @@ type AgentScan struct {
 	Agent      Agent
 	Missing    bool   // 目录不存在
 	SkipReason string // 整个目录跳过的原因
+	DirLinked  bool   // 整个目录已经指向共享目录
 	Skills     []*SkillDir
 	Links      []LinkEntry
+	Hidden     []string // 以 . 开头的项（.DS_Store 除外），可能由 Agent 自己管理
+	Others     []string // 不是 skill 的文件或目录
 	Problems   []string
 }
 
@@ -173,6 +176,7 @@ func scanAll(p Paths, agents []Agent) []*AgentScan {
 		real := realOrClean(a.Dir)
 		if real == centralReal {
 			s.SkipReason = "这个目录本身就是共享目录"
+			s.DirLinked = true
 			continue
 		}
 		if other, ok := seen[real]; ok {
@@ -194,6 +198,9 @@ func scanAgentDir(s *AgentScan, centralReal string) {
 	for _, e := range entries {
 		name := e.Name()
 		if strings.HasPrefix(name, ".") { // 例如 codex 的 .system，由 Agent 自己管理
+			if name != ".DS_Store" {
+				s.Hidden = append(s.Hidden, name)
+			}
 			continue
 		}
 		path := filepath.Join(s.Agent.Dir, name)
@@ -206,6 +213,7 @@ func scanAgentDir(s *AgentScan, centralReal string) {
 			continue
 		}
 		if !fi.IsDir() || !hasSkillFile(path) {
+			s.Others = append(s.Others, name)
 			continue
 		}
 		sd, err := hashDir(path)

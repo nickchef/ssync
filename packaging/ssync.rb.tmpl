@@ -1,5 +1,5 @@
 class Ssync < Formula
-  desc "Move AI agent skills into ~/.agents/skills and symlink them back"
+  desc "Centralize AI agent skills in ~/.agents/skills"
   homepage "https://github.com/nickchef/ssync"
   url "@URL@"
   sha256 "@SHA256@"
@@ -17,7 +17,7 @@ class Ssync < Formula
     ENV["HOME"] = testpath
     (testpath/".claude/skills/demo/SKILL.md").write "# demo"
     system bin/"ssync", "apply", "-y"
-    assert_predicate testpath/".claude/skills/demo", :symlink?
+    assert_predicate testpath/".claude/skills", :symlink?
     assert_predicate testpath/".agents/skills/demo/SKILL.md", :exist?
   end
 end

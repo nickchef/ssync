@@ -60,11 +60,27 @@ func (a *App) Agents() error {
 		if ignored[ag.Name] {
 			state += a.yellow("（配置里已忽略）")
 		}
-		a.printf("%-12s %-32s %s\n", ag.Name, disp(a.Paths, ag.Dir), state)
+		a.printf("%-12s %-32s %s %s\n", ag.Name, disp(a.Paths, ag.Dir), padWide(ag.Mode.label(), 10), state)
 	}
 	a.printf("\n共享目录：%s\n", disp(a.Paths, a.Paths.Central))
 	a.printf("配置文件：%s\n", disp(a.Paths, a.Paths.Config))
 	return nil
+}
+
+// padWide 按终端显示宽度补空格（中文占两格），让中文列对齐。
+func padWide(s string, width int) string {
+	w := 0
+	for _, r := range s {
+		if r >= 0x2E80 {
+			w += 2
+		} else {
+			w++
+		}
+	}
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
 }
 
 // ---------- status ----------
@@ -75,12 +91,16 @@ func (a *App) Status(o options) error {
 		return err
 	}
 	a.printf("共享目录 %s：%d 个 skill\n", disp(a.Paths, a.Paths.Central), countSkills(a.Paths.Central))
-	pending := 0
+	pending, oldLinks, pendingDirs := 0, 0, 0
 	for _, s := range scans {
 		if s.Missing {
 			continue
 		}
 		a.printf("\n%s  %s\n", a.bold(s.Agent.Name), a.dim(disp(a.Paths, s.Agent.Dir)))
+		if s.DirLinked {
+			a.printf("  %s 整个目录已链接到共享目录\n", a.green("✓"))
+			continue
+		}
 		if s.SkipReason != "" {
 			a.printf("  跳过：%s\n", s.SkipReason)
 			continue
@@ -95,7 +115,14 @@ func (a *App) Status(o options) error {
 			local = append(local, sd.Name)
 		}
 		pending += len(local)
-		if len(linked) > 0 {
+		native := s.Agent.Mode == ModeNative
+		if native {
+			a.printf("  %s\n", a.green("✓ 直接读共享目录"))
+			if len(linked) > 0 {
+				oldLinks += len(linked)
+				a.printf("  %s %s（apply 时移到备份）\n", a.yellow("• 旧链接  "), strings.Join(linked, ", "))
+			}
+		} else if len(linked) > 0 {
 			a.printf("  %s %s\n", a.green("✓ 已链接  "), strings.Join(linked, ", "))
 		}
 		if len(local) > 0 {
@@ -112,12 +139,26 @@ func (a *App) Status(o options) error {
 		for _, pr := range s.Problems {
 			a.printf("  %s %s\n", a.red("! 问题    "), pr)
 		}
-		if len(s.Links) == 0 && len(s.Skills) == 0 && len(s.Problems) == 0 {
+		if !native && len(s.Links) == 0 && len(s.Skills) == 0 && len(s.Problems) == 0 {
 			a.printf("  %s\n", a.dim("（空）"))
 		}
+		if s.Agent.Mode == ModeWhole {
+			pendingDirs++
+			a.printf("  %s\n", a.dim("apply 后整个目录会换成指向共享目录的软链接"))
+		}
 	}
+	var todo []string
 	if pending > 0 {
-		a.printf("\n还有 %d 个 skill 没迁移，运行 ssync plan 看具体改动。\n", pending)
+		todo = append(todo, fmt.Sprintf("%d 个 skill 没迁移", pending))
+	}
+	if oldLinks > 0 {
+		todo = append(todo, fmt.Sprintf("%d 个旧链接要清理", oldLinks))
+	}
+	if pendingDirs > 0 {
+		todo = append(todo, fmt.Sprintf("%d 个目录没换成整目录链接", pendingDirs))
+	}
+	if len(todo) > 0 {
+		a.printf("\n还有 %s，运行 ssync plan 看具体改动。\n", strings.Join(todo, "、"))
 	}
 	return nil
 }
@@ -144,7 +185,7 @@ func (a *App) Plan(o options) error {
 		return err
 	}
 	groups := buildGroups(a.Paths, scans)
-	pl, err := buildPlan(a.Paths, "<本次运行>", groups, func(*Group, int, int) (int, error) {
+	pl, err := buildPlan(a.Paths, "<本次运行>", scans, groups, func(*Group, int, int) (int, error) {
 		return choicePending, nil
 	})
 	if err != nil {
@@ -169,7 +210,7 @@ func (a *App) Apply(o options) error {
 		return err
 	}
 	groups := buildGroups(a.Paths, scans)
-	pl, err := buildPlan(a.Paths, newRunID(a.Paths), groups, a.resolveConflict)
+	pl, err := buildPlan(a.Paths, newRunID(a.Paths), scans, groups, a.resolveConflict)
 	if err != nil {
 		return err
 	}
@@ -189,35 +230,44 @@ func (a *App) Apply(o options) error {
 		return fmt.Errorf("迁移没有全部完成")
 	}
 	a.printf("\n%s 完成 %d 项改动。撤销：ssync undo\n", a.green("✓"), len(pl.Steps))
-	if hasBackups(pl) {
+	if hasBackups(a.Paths, pl) {
 		a.printf("被替换下来的副本在 %s\n", disp(a.Paths, a.Paths.backupRoot(pl.RunID)))
 	}
 	return nil
 }
 
-func hasBackups(pl *Plan) bool {
+func hasBackups(p Paths, pl *Plan) bool {
+	root := p.backupRoot(pl.RunID) + string(filepath.Separator)
 	for _, s := range pl.Steps {
-		if s.Verb != "迁移" {
-			return true
+		for _, op := range s.Ops {
+			if op.Kind == "move" && strings.HasPrefix(op.Dst, root) {
+				return true
+			}
 		}
 	}
 	return false
 }
 
 func (a *App) printPlan(scans []*AgentScan, pl *Plan) {
-	var dirs []string
+	var dirs, linked []string
 	for _, s := range scans {
-		if !s.Missing && s.SkipReason == "" {
+		if s.DirLinked {
+			linked = append(linked, s.Agent.Name)
+		} else if !s.Missing && s.SkipReason == "" {
 			dirs = append(dirs, s.Agent.Name)
 		}
 	}
-	if len(dirs) == 0 {
+	if len(dirs) == 0 && len(linked) == 0 {
 		a.printf("没有找到任何 Agent 的 skills 目录。\n")
-	} else {
+	}
+	if len(dirs) > 0 {
 		a.printf("扫描：%s\n", strings.Join(dirs, ", "))
 	}
+	if len(linked) > 0 {
+		a.printf("整个目录已链接到共享目录：%s\n", strings.Join(linked, ", "))
+	}
 	for _, s := range scans {
-		if s.SkipReason != "" {
+		if s.SkipReason != "" && !s.DirLinked {
 			a.printf("跳过 %s：%s\n", s.Agent.Name, s.SkipReason)
 		}
 		for _, pr := range s.Problems {
@@ -254,7 +304,7 @@ func (a *App) printPlan(scans []*AgentScan, pl *Plan) {
 			a.printf("  %s\n", s)
 		}
 	}
-	if hasBackups(pl) {
+	if hasBackups(a.Paths, pl) {
 		a.printf("\n被替换下来的副本会移到 %s，不会删除。\n", disp(a.Paths, filepath.Join(a.Paths.State, "backups")))
 	}
 }

@@ -31,43 +31,74 @@ func pathsFor(home string) Paths {
 func (p Paths) backupRoot(runID string) string { return filepath.Join(p.State, "backups", runID) }
 func (p Paths) runsDir() string                { return filepath.Join(p.State, "runs") }
 
+// Mode 是 skill 迁到共享目录后，Agent 怎么继续看到它们。
+type Mode string
+
+const (
+	ModeWhole  Mode = "whole"  // 整个 skills 目录换成指向共享目录的软链接
+	ModeNative Mode = "native" // Agent 自己会读 ~/.agents/skills，不建任何链接
+	ModeLink   Mode = "link"   // 每个 skill 目录各自换成软链接
+)
+
+func (m Mode) label() string {
+	switch m {
+	case ModeWhole:
+		return "整目录链接"
+	case ModeNative:
+		return "直接读取"
+	}
+	return "逐个链接"
+}
+
 type Agent struct {
 	Name string
 	Dir  string
+	Mode Mode
 }
 
 // 内置的用户级 skills 目录（macOS）。目录不存在的 Agent 会被直接忽略。
-var builtinAgents = []struct{ name, rel string }{
-	{"claude", ".claude/skills"},
-	{"codex", ".codex/skills"},
-	{"cursor", ".cursor/skills"},
-	{"gemini", ".gemini/skills"},
-	{"antigravity", ".gemini/config/skills"},
-	{"grok", ".grok/skills"},
-	{"opencode", ".config/opencode/skills"},
-	{"copilot", ".copilot/skills"},
-	{"windsurf", ".codeium/windsurf/skills"},
-	{"kiro", ".kiro/skills"},
-	{"qwen", ".qwen/skills"},
-	{"factory", ".factory/skills"},
-	{"goose", ".config/goose/skills"},
-	{"amp", ".config/amp/skills"},
-	{"roo", ".roo/skills"},
-	{"cline", ".cline/skills"},
-	{"augment", ".augment/skills"},
-	{"trae", ".trae/skills"},
-	{"openclaw", ".openclaw/skills"},
+//
+// native：官方文档写明会读 ~/.agents/skills。本机另外核实过：grok 用 grok inspect，
+// opencode 用 opencode debug skill（按名字去重），cursor-agent 看了加载代码（始终读
+// ~/.agents/skills，按真实路径去重）。
+// whole：不读 ~/.agents/skills，只好把整个目录链过去。
+// link：还没核实，保守起见逐个链接；确认后可在配置文件 modes 里改成 native。
+var builtinAgents = []struct {
+	name, rel string
+	mode      Mode
+}{
+	{"claude", ".claude/skills", ModeWhole},
+	{"codex", ".codex/skills", ModeNative},
+	{"cursor", ".cursor/skills", ModeNative},
+	{"gemini", ".gemini/skills", ModeNative},
+	{"antigravity", ".gemini/config/skills", ModeWhole},
+	{"grok", ".grok/skills", ModeNative},
+	{"opencode", ".config/opencode/skills", ModeNative},
+	{"copilot", ".copilot/skills", ModeLink},
+	{"windsurf", ".codeium/windsurf/skills", ModeLink},
+	{"kiro", ".kiro/skills", ModeLink},
+	{"qwen", ".qwen/skills", ModeLink},
+	{"factory", ".factory/skills", ModeLink},
+	{"goose", ".config/goose/skills", ModeLink},
+	{"amp", ".config/amp/skills", ModeLink},
+	{"roo", ".roo/skills", ModeLink},
+	{"cline", ".cline/skills", ModeLink},
+	{"augment", ".augment/skills", ModeLink},
+	{"trae", ".trae/skills", ModeLink},
+	{"openclaw", ".openclaw/skills", ModeLink},
 }
 
 // Config 对应 ~/.config/ssync/config.json，全部字段可选。
 //
 //	{
 //	  "agents": {"myagent": "~/.myagent/skills"},  // 新增或覆盖 Agent 目录
-//	  "ignore": ["grok"]                            // 永远跳过的 Agent
+//	  "ignore": ["grok"],                           // 永远跳过的 Agent
+//	  "modes": {"kiro": "native"}                   // 改链接方式：whole / native / link
 //	}
 type Config struct {
 	Agents map[string]string `json:"agents"`
 	Ignore []string          `json:"ignore"`
+	Modes  map[string]Mode   `json:"modes"`
 }
 
 func loadConfig(path string) (Config, error) {
@@ -108,7 +139,7 @@ func allAgents(p Paths) ([]Agent, Config, error) {
 	idx := map[string]int{}
 	for _, b := range builtinAgents {
 		idx[b.name] = len(list)
-		list = append(list, Agent{Name: b.name, Dir: filepath.Join(p.Home, b.rel)})
+		list = append(list, Agent{Name: b.name, Dir: filepath.Join(p.Home, b.rel), Mode: b.mode})
 	}
 	var extra []string
 	for name := range cfg.Agents {
@@ -122,7 +153,17 @@ func allAgents(p Paths) ([]Agent, Config, error) {
 			continue
 		}
 		idx[name] = len(list)
-		list = append(list, Agent{Name: name, Dir: dir})
+		list = append(list, Agent{Name: name, Dir: dir, Mode: ModeLink})
+	}
+	for name, m := range cfg.Modes {
+		i, ok := idx[name]
+		if !ok {
+			return nil, cfg, fmt.Errorf("配置文件 modes 里的 Agent 不存在：%s", name)
+		}
+		if m != ModeWhole && m != ModeNative && m != ModeLink {
+			return nil, cfg, fmt.Errorf("配置文件 modes 里 %s 的值 %q 不对，只能是 whole / native / link", name, m)
+		}
+		list[i].Mode = m
 	}
 	return list, cfg, nil
 }

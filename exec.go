@@ -110,6 +110,10 @@ func executePlan(p Paths, pl *Plan) (*Run, error) {
 	if err := saveRun(p, r); err != nil {
 		return r, fmt.Errorf("写运行记录失败：%w", err)
 	}
+	// 整目录链接要指向它，即使这次没有 skill 迁进去也得先有。
+	if err := os.MkdirAll(p.Central, 0o755); err != nil {
+		return r, err
+	}
 	for i := range r.Ops {
 		if err := applyOp(r.Ops[i]); err != nil {
 			return r, fmt.Errorf("%s 失败：%w", describeOp(p, r.Ops[i]), err)

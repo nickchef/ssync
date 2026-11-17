@@ -13,7 +13,7 @@ import (
 
 var version = "dev"
 
-const usage = `ssync：把各个 Agent 的 skill 集中到 ~/.agents/skills，再用软链接放回原处。
+const usage = `ssync：把各个 Agent 的 skill 集中到 ~/.agents/skills，让它们都从这一份读。
 
 用法：
   ssync status          查看各 Agent 的 skills 目录现状
@@ -28,10 +28,14 @@ status / plan / apply 可加：
   --skip grok           跳过这些 Agent
 
 说明：
+  - codex、cursor、gemini、grok、opencode 自己会读 ~/.agents/skills，不建链接；
+    claude、antigravity 整个 skills 目录换成指向共享目录的软链接；
+    其余 Agent 逐个 skill 链接。用 ssync agents 查看每个的方式。
   - 只处理含 SKILL.md 的目录；以 . 开头的（如 codex 的 .system）不碰。
   - 内容相同的副本合并成一份；被替换下来的副本移到 ~/.agents/.ssync/backups，不会删除。
   - 自定义目录写在 ~/.config/ssync/config.json：
-      {"agents": {"myagent": "~/.myagent/skills"}, "ignore": ["grok"]}
+      {"agents": {"myagent": "~/.myagent/skills"}, "ignore": ["grok"],
+       "modes": {"kiro": "native"}}
 `
 
 func main() {
