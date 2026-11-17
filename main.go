@@ -21,6 +21,11 @@ const usage = `ssync：把各个 Agent 的 skill 集中到 ~/.agents/skills，�
   ssync apply [-y]      执行迁移；同名但内容不同的 skill 会逐个问你保留哪个
   ssync undo [-y]       撤销最近一次 apply（可以重复执行，一次撤一层）
   ssync agents          列出支持的 Agent 和对应目录
+  ssync auto on [--at 09:00]
+                        每天定时自动执行一次 apply -y（冲突会跳过，留给你手动处理）
+  ssync auto off        关闭每天自动整理
+  ssync auto [status]   查看自动整理的设置和上次运行结果
+  ssync auto run        立即按自动整理的方式跑一次，输出也会写进日志
   ssync version
 
 status / plan / apply 可加：
@@ -74,6 +79,14 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 		Color:       isTerminal(stdout) && os.Getenv("NO_COLOR") == "",
 	}
 
+	if cmd == "auto" {
+		sub := "status"
+		if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+			sub, rest = rest[0], rest[1:]
+		}
+		cmd = "auto " + sub
+	}
+
 	o, err := parseFlags(cmd, rest, stderr)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -93,6 +106,14 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 		err = app.Undo(o)
 	case "agents":
 		err = app.Agents()
+	case "auto on":
+		err = app.AutoOn(o.at)
+	case "auto off":
+		err = app.AutoOff()
+	case "auto status":
+		err = app.AutoStatus()
+	case "auto run":
+		err = app.AutoRun()
 	default:
 		fmt.Fprintf(stderr, "未知命令：%s\n\n%s", cmd, usage)
 		return 2
@@ -111,6 +132,7 @@ func run(args []string, stdin, stdout *os.File, stderr io.Writer) int {
 type options struct {
 	only, skip []string
 	yes        bool
+	at         string // auto on 的运行时间
 }
 
 func parseFlags(cmd string, args []string, stderr io.Writer) (options, error) {
@@ -127,6 +149,8 @@ func parseFlags(cmd string, args []string, stderr io.Writer) (options, error) {
 	case "apply", "undo":
 		fs.BoolVar(&o.yes, "y", false, "不再确认，直接执行")
 		fs.BoolVar(&o.yes, "yes", false, "同 -y")
+	case "auto on":
+		fs.StringVar(&o.at, "at", autoDefaultTime, "每天几点运行，24 小时制")
 	}
 	if err := fs.Parse(args); err != nil {
 		return o, err

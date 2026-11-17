@@ -26,6 +26,22 @@ ssync agents    # 列出支持的 Agent 和目录
 
 `status` / `plan` / `apply` 可以加 `--only claude,codex` 或 `--skip grok`。
 
+## 每天自动整理
+
+```sh
+ssync auto on              # 每天 09:00 自动跑一次 ssync apply -y
+ssync auto on --at 22:30   # 换个时间（再运行一次就会覆盖旧设置）
+ssync auto                 # 查看是否开启、运行时间、上次运行的输出
+ssync auto run             # 现在就按自动整理的方式跑一次
+ssync auto off             # 关闭
+```
+
+- 用的是 macOS 自带的 launchd：在 `~/Library/LaunchAgents/io.github.nickchef.ssync.plist` 放一个定时任务，不需要常驻进程。第一次开启时系统可能弹出「已添加后台项目」的通知，属正常。
+- 到点时 Mac 在睡眠，会在唤醒后补跑；关机错过的那次不补。
+- 自动运行等同于 `apply -y`：同名但内容不同的 skill 会跳过、保持原样，`ssync auto` 能看到跳过了哪些，再手动 `ssync apply` 处理。
+- 每次运行的输出追加到 `~/.agents/.ssync/auto.log`（超过 1 MiB 转成 `auto.log.1`）。自动运行产生的改动同样可以 `ssync undo`。
+- 定时任务里记的是开启时 ssync 的路径（Homebrew 安装的会记成 `$(brew --prefix)/bin/ssync`，升级后仍然有效）。卸载 ssync 前先 `ssync auto off`。
+
 ## 它会做什么
 
 对每个 Agent 的 skills 目录里含 `SKILL.md` 的子目录：
