@@ -19,10 +19,11 @@ const usage = `ssync：把各个 Agent 的 skill 集中到 ~/.agents/skills，�
   ssync status          查看各 Agent 的 skills 目录现状
   ssync plan            预演：列出 apply 会做的改动，不动任何文件
   ssync apply [-y]      执行迁移；同名但内容不同的 skill 会逐个问你保留哪个
+                        加 -y 不再确认也不再提问，冲突直接保留最近修改的版本
   ssync undo [-y]       撤销最近一次 apply（可以重复执行，一次撤一层）
   ssync agents          列出支持的 Agent 和对应目录
   ssync auto on [--at 09:00]
-                        每天定时自动执行一次 apply -y（冲突会跳过，留给你手动处理）
+                        每天定时自动执行一次 apply -y
   ssync auto off        关闭每天自动整理
   ssync auto [status]   查看自动整理的设置和上次运行结果
   ssync auto run        立即按自动整理的方式跑一次，输出也会写进日志
@@ -38,6 +39,7 @@ status / plan / apply 可加：
     其余 Agent 逐个 skill 链接。用 ssync agents 查看每个的方式。
   - 只处理含 SKILL.md 的目录；以 . 开头的（如 codex 的 .system）不碰。
   - 内容相同的副本合并成一份；被替换下来的副本移到 ~/.agents/.ssync/backups，不会删除。
+  - "最近修改"看的是 skill 目录里最新那个文件的修改时间（忽略 .DS_Store 等）。
   - 自定义目录写在 ~/.config/ssync/config.json：
       {"agents": {"myagent": "~/.myagent/skills"}, "ignore": ["grok"],
        "modes": {"kiro": "native"}}
@@ -147,7 +149,11 @@ func parseFlags(cmd string, args []string, stderr io.Writer) (options, error) {
 	}
 	switch cmd {
 	case "apply", "undo":
-		fs.BoolVar(&o.yes, "y", false, "不再确认，直接执行")
+		help := "不再确认，直接执行"
+		if cmd == "apply" {
+			help += "；同名冲突保留最近修改的版本"
+		}
+		fs.BoolVar(&o.yes, "y", false, help)
 		fs.BoolVar(&o.yes, "yes", false, "同 -y")
 	case "auto on":
 		fs.StringVar(&o.at, "at", autoDefaultTime, "每天几点运行，24 小时制")

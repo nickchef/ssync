@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeLaunchd 代替真实的 launchctl，只记录调用和是否已加载。
@@ -178,6 +179,7 @@ func TestAutoRunAppliesAndLogs(t *testing.T) {
 	e.skill(".codex/skills/new", map[string]string{})
 	e.skill(".claude/skills/foo", map[string]string{"SKILL.md": "a"})
 	e.skill(".cursor/skills/foo", map[string]string{"SKILL.md": "b"})
+	e.mtime(".claude/skills/foo", time.Now().Add(-time.Hour))
 
 	a := e.app("")
 	a.Interactive = true // 即使在终端里手动运行，也不能停下来提问
@@ -186,11 +188,12 @@ func TestAutoRunAppliesAndLogs(t *testing.T) {
 	}
 	e.mustRealDir(".agents/skills/new")
 	e.mustGone(".codex/skills/new")
-	e.mustRealDir(".claude/skills/foo") // 冲突跳过，原样不动
-	e.mustRealDir(".cursor/skills/foo")
+	e.mustFile(".agents/skills/foo/SKILL.md", "b") // 冲突保留较新的 cursor 版本
+	e.mustGone(".cursor/skills/foo")
+	e.mustLink(".claude/skills", ".agents/skills")
 
 	log, _ := os.ReadFile(e.p(".agents/.ssync/auto.log"))
-	if !strings.Contains(string(log), "自动整理 =====") || !strings.Contains(string(log), "没有选择，保持原样") {
+	if !strings.Contains(string(log), "自动整理 =====") || !strings.Contains(string(log), "foo：保留 cursor 的版本") {
 		t.Fatalf("日志内容不对：\n%s", log)
 	}
 	if !strings.Contains(e.out.String(), "迁移") {

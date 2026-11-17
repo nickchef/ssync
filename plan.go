@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Op 是一个最小的文件操作，会写进运行记录，用来撤销。
@@ -31,6 +32,7 @@ type Plan struct {
 	RunID   string
 	Steps   []Step
 	Pending []string // plan 预演时还没选版本的冲突
+	Auto    []string // -y 时自动保留了最近修改版本的冲突
 	Skipped []string
 }
 
@@ -45,6 +47,7 @@ func (pl *Plan) opCount() int {
 const (
 	choiceSkip    = -1
 	choicePending = -2
+	choiceTie     = -3 // 自动选择时，几个版本的最近修改时间一样，分不出新旧
 )
 
 var errAbort = errors.New("aborted")
@@ -86,11 +89,19 @@ func buildPlan(p Paths, runID string, scans []*AgentScan, groups []*Group, resol
 			}
 			switch c {
 			case choicePending:
-				pl.Pending = append(pl.Pending, fmt.Sprintf("%s：%d 个不同版本", g.Name, len(g.Variants)))
+				note := "最近修改时间相同，-y 时会跳过"
+				if n := newestVariant(g); n >= 0 {
+					note = "-y 时保留" + describeVariant(g.Variants[n])
+				}
+				pl.Pending = append(pl.Pending, fmt.Sprintf("%s：%d 个不同版本，%s", g.Name, len(g.Variants), note))
 				mark(g, waiting)
 				continue
 			case choiceSkip:
 				pl.Skipped = append(pl.Skipped, fmt.Sprintf("%s：%d 个不同版本，没有选择，保持原样", g.Name, len(g.Variants)))
+				mark(g, stuck)
+				continue
+			case choiceTie:
+				pl.Skipped = append(pl.Skipped, fmt.Sprintf("%s：%d 个不同版本的最近修改时间相同，分不出哪个较新，保持原样", g.Name, len(g.Variants)))
 				mark(g, stuck)
 				continue
 			}
@@ -138,6 +149,56 @@ func buildPlan(p Paths, runID string, scans []*AgentScan, groups []*Group, resol
 	}
 	pl.Steps = append(pl.Steps, dirSteps...)
 	return pl, nil
+}
+
+// modTime 是这个版本所有副本里最新的文件修改时间。
+func (v *Variant) modTime() time.Time {
+	var t time.Time
+	for _, m := range v.Members {
+		if m.ModTime.After(t) {
+			t = m.ModTime
+		}
+	}
+	return t
+}
+
+// newestVariant 返回最近修改的版本下标；最新的几个修改时间完全相同时返回 -1。
+func newestVariant(g *Group) int {
+	best, tie := -1, false
+	var bt time.Time
+	for i, v := range g.Variants {
+		switch t := v.modTime(); {
+		case best < 0 || t.After(bt):
+			best, bt, tie = i, t, false
+		case t.Equal(bt):
+			tie = true
+		}
+	}
+	if tie {
+		return -1
+	}
+	return best
+}
+
+// newestResolver 是 -y 时的冲突处理：保留最近修改的版本，记进 pl.Auto。
+func newestResolver(auto *[]string) Resolver {
+	return func(g *Group, _, _ int) (int, error) {
+		n := newestVariant(g)
+		if n < 0 {
+			return choiceTie, nil
+		}
+		*auto = append(*auto, fmt.Sprintf("%s：保留%s，其余 %d 个版本移到备份", g.Name, describeVariant(g.Variants[n]), len(g.Variants)-1))
+		return n, nil
+	}
+}
+
+// describeVariant 形如「claude、kiro 的版本（最近修改 2026-11-17 09:00:01）」。
+func describeVariant(v *Variant) string {
+	var owners []string
+	for _, m := range v.Members {
+		owners = append(owners, m.Agent)
+	}
+	return fmt.Sprintf(" %s 的版本（最近修改 %s）", strings.Join(owners, "、"), v.modTime().Local().Format("2006-01-02 15:04:05"))
 }
 
 // wholeDirSteps 生成把整个 Agent 目录换成共享目录软链接的改动。

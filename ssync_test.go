@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type env struct {
@@ -127,11 +128,23 @@ func (e *env) mustFile(rel, body string) {
 	}
 }
 
+// apply 模拟在终端里交互运行：input 先回答冲突，最后自动补一个 y 确认执行。
 func (e *env) apply(input string) {
 	e.t.Helper()
-	if err := e.app(input).Apply(options{yes: true}); err != nil {
+	if err := e.app(input + "y\n").Apply(options{}); err != nil {
 		e.t.Fatalf("apply 出错：%v\n%s", err, e.out)
 	}
+}
+
+// mtime 把 rel 目录里所有文件的修改时间设成 t。
+func (e *env) mtime(rel string, t time.Time) {
+	e.t.Helper()
+	filepath.WalkDir(e.p(rel), func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			e.t.Fatal(err)
+		}
+		return os.Chtimes(p, t, t)
+	})
 }
 
 func (e *env) backups() []string {
@@ -279,7 +292,7 @@ func TestQuitAbortsWithoutChanges(t *testing.T) {
 	e.skill(".codex/skills/foo", map[string]string{"SKILL.md": "b"})
 	e.skill(".claude/skills/ok", map[string]string{"SKILL.md": "ok"})
 	before := e.snapshot()
-	err := e.app("q\n").Apply(options{yes: true})
+	err := e.app("q\n").Apply(options{})
 	if err != errAbort {
 		t.Fatalf("期望中止，实际 %v", err)
 	}
@@ -288,22 +301,86 @@ func TestQuitAbortsWithoutChanges(t *testing.T) {
 	}
 }
 
-func TestNonInteractiveSkipsConflicts(t *testing.T) {
+func TestNonInteractiveNeedsYes(t *testing.T) {
 	e := newEnv(t)
-	e.skill(".claude/skills/foo", map[string]string{"SKILL.md": "a"})
-	e.skill(".codex/skills/foo", map[string]string{"SKILL.md": "b"})
+	e.skill(".codex/skills/foo", map[string]string{})
 	a := e.app("")
 	a.Interactive = false
 	if err := a.Apply(options{}); err == nil {
 		t.Fatal("非交互且没有 -y 时应拒绝执行")
 	}
+	e.mustRealDir(".codex/skills/foo")
+}
+
+func TestYesKeepsNewestVersion(t *testing.T) {
+	e := newEnv(t)
+	now := time.Now()
+	e.skill(".agents/skills/foo", map[string]string{"SKILL.md": "old"})
+	e.skill(".claude/skills/foo", map[string]string{"SKILL.md": "old"})
+	e.skill(".kiro/skills/foo", map[string]string{"SKILL.md": "new", "extra.md": "x"})
+	e.mtime(".agents/skills/foo", now.Add(-2*time.Hour))
+	e.mtime(".claude/skills/foo", now.Add(-3*time.Hour))
+	e.mtime(".kiro/skills/foo", now.Add(-time.Hour))
+
+	if err := e.app("").Plan(options{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(e.out.String(), "foo：2 个不同版本，-y 时保留 kiro 的版本") {
+		t.Fatalf("plan 应预告 -y 会保留哪个版本：\n%s", e.out)
+	}
+
+	// 在终端里加 -y 也不应提问：输入为空，一提问就会因为读到 EOF 而中止。
+	e.out.Reset()
+	if err := e.app("").Apply(options{yes: true}); err != nil {
+		t.Fatalf("%v\n%s", err, e.out)
+	}
+	if s := e.out.String(); strings.Contains(s, "保留哪个版本") || !strings.Contains(s, "foo：保留 kiro 的版本") {
+		t.Fatalf("应自动保留 kiro 的版本且不提问：\n%s", s)
+	}
+	e.mustFile(".agents/skills/foo/SKILL.md", "new")
+	e.mustFile(".agents/skills/foo/extra.md", "x")
+	e.mustLink(".kiro/skills/foo", ".agents/skills/foo")
+	e.mustLink(".claude/skills", ".agents/skills") // 冲突都解决了，claude 照常整目录链接
+	if got := strings.Join(e.backups(), ","); got != "_central/foo,claude/foo" {
+		t.Fatalf("备份应为 _central/foo,claude/foo，实际 %s", got)
+	}
+}
+
+func TestYesKeepsNewerCentral(t *testing.T) {
+	e := newEnv(t)
+	now := time.Now()
+	e.skill(".agents/skills/foo", map[string]string{"SKILL.md": "central"})
+	e.skill(".codex/skills/foo", map[string]string{"SKILL.md": "codex"})
+	e.mtime(".agents/skills/foo", now)
+	e.mtime(".codex/skills/foo", now.Add(-time.Minute))
+	a := e.app("")
+	a.Interactive = false
+	if err := a.Apply(options{yes: true}); err != nil {
+		t.Fatal(err)
+	}
+	e.mustFile(".agents/skills/foo/SKILL.md", "central")
+	e.mustGone(".codex/skills/foo")
+	if got := strings.Join(e.backups(), ","); got != "codex/foo" {
+		t.Fatalf("备份应为 codex/foo，实际 %s", got)
+	}
+}
+
+func TestYesSkipsWhenModTimesTie(t *testing.T) {
+	e := newEnv(t)
+	same := time.Now().Add(-time.Hour)
+	e.skill(".claude/skills/foo", map[string]string{"SKILL.md": "a"})
+	e.skill(".codex/skills/foo", map[string]string{"SKILL.md": "b"})
+	e.mtime(".claude/skills/foo", same)
+	e.mtime(".codex/skills/foo", same)
+	a := e.app("")
+	a.Interactive = false
 	if err := a.Apply(options{yes: true}); err != nil {
 		t.Fatal(err)
 	}
 	e.mustRealDir(".claude/skills/foo")
 	e.mustRealDir(".codex/skills/foo")
-	if !strings.Contains(e.out.String(), "没有选择，保持原样") {
-		t.Fatalf("应提示冲突被跳过：\n%s", e.out)
+	if !strings.Contains(e.out.String(), "分不出哪个较新，保持原样") {
+		t.Fatalf("修改时间相同时应跳过并说明：\n%s", e.out)
 	}
 }
 

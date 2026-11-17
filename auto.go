@@ -15,7 +15,8 @@ import (
 )
 
 // 每天自动整理：在 ~/Library/LaunchAgents 放一个 launchd 任务，每天定时运行
-// `ssync auto run`，相当于 `ssync apply -y`，输出追加到 ~/.agents/.ssync/auto.log。
+// `ssync auto run`，相当于 `ssync apply -y`（同名冲突保留最近修改的版本），
+// 输出追加到 ~/.agents/.ssync/auto.log。
 
 const (
 	autoLabel       = "io.github.nickchef.ssync"
@@ -100,7 +101,7 @@ func (a *App) AutoOn(at string) error {
 	}
 
 	a.printf("%s 已开启每天自动整理：每天 %s 运行一次 ssync apply -y。\n", a.green("✓"), t.Format("15:04"))
-	a.printf("  同名但内容不同的 skill 会跳过，留给你手动 ssync apply 处理。\n")
+	a.printf("  同名但内容不同的 skill 保留最近修改的版本，其余版本移到备份（可以 ssync undo）。\n")
 	a.printf("  到点时如果 Mac 在睡眠，会在唤醒后补跑；关机错过的那次不补。\n")
 	a.printf("  日志：%s\n", disp(a.Paths, a.Paths.autoLog()))
 	a.printf("\n第一次运行会做什么，可以先用 ssync plan 看。查看状态：ssync auto status；关闭：ssync auto off\n")

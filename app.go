@@ -197,7 +197,7 @@ func (a *App) Plan(o options) error {
 
 func (a *App) Apply(o options) error {
 	if !a.Interactive && !o.yes {
-		return fmt.Errorf("当前不是交互终端，请加 -y 确认执行（有冲突的 skill 会被跳过）")
+		return fmt.Errorf("当前不是交互终端，请加 -y 确认执行（同名冲突会保留最近修改的版本）")
 	}
 	unlock, err := acquireLock(a.Paths)
 	if err != nil {
@@ -210,10 +210,16 @@ func (a *App) Apply(o options) error {
 		return err
 	}
 	groups := buildGroups(a.Paths, scans)
-	pl, err := buildPlan(a.Paths, newRunID(a.Paths), scans, groups, a.resolveConflict)
+	resolve := a.resolveConflict
+	var auto []string
+	if o.yes {
+		resolve = newestResolver(&auto) // -y 不再提问：冲突保留最近修改的版本
+	}
+	pl, err := buildPlan(a.Paths, newRunID(a.Paths), scans, groups, resolve)
 	if err != nil {
 		return err
 	}
+	pl.Auto = auto
 	a.printPlan(scans, pl)
 	if len(pl.Steps) == 0 {
 		return nil
@@ -292,8 +298,14 @@ func (a *App) printPlan(scans []*AgentScan, pl *Plan) {
 			a.printf("  %s  %s\n", verb, st.Desc)
 		}
 	}
+	if len(pl.Auto) > 0 {
+		a.printf("\n%s\n", a.bold("同名但内容不同，自动保留最近修改的版本："))
+		for _, s := range pl.Auto {
+			a.printf("  %s\n", s)
+		}
+	}
 	if len(pl.Pending) > 0 {
-		a.printf("\n%s\n", a.bold("同名但内容不同（apply 时会逐个问你保留哪个）："))
+		a.printf("\n%s\n", a.bold("同名但内容不同（apply 时会逐个问你保留哪个；加 -y 则自动保留最近修改的）："))
 		for _, s := range pl.Pending {
 			a.printf("  %s\n", s)
 		}
@@ -324,9 +336,13 @@ func (a *App) resolveConflict(g *Group, i, n int) (int, error) {
 		return choiceSkip, nil
 	}
 	a.printf("\n%s\n", a.bold(fmt.Sprintf("冲突 %d/%d：%s 有 %d 个不同版本", i, n, g.Name, len(g.Variants))))
+	newest := newestVariant(g)
 	for vi, v := range g.Variants {
-		rep := v.Members[0]
-		a.printf("  [%d] %d 个文件，最近修改 %s\n", vi+1, rep.FileCount, rep.ModTime.Local().Format("2006-01-02 15:04"))
+		tag := ""
+		if vi == newest {
+			tag = a.green("（最新）")
+		}
+		a.printf("  [%d] %d 个文件，最近修改 %s%s\n", vi+1, v.Members[0].FileCount, v.modTime().Local().Format("2006-01-02 15:04:05"), tag)
 		for _, m := range v.Members {
 			a.printf("      %-12s %s\n", m.Agent, disp(a.Paths, m.Path))
 		}
